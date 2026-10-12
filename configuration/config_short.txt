@@ -1,0 +1,17 @@
+num_layers=5
+layer=1024
+layer=500
+layer=210
+layer=135
+layer=10
+num_training_patterns=1934
+num_test_patterns=946
+img_dim_x=32
+img_dim_y=32
+dataset_training_path=./datasets/optdigits.tra
+dataset_test_path=./datasets/optdigits.cv
+num_epochs=2
+seed=50
+alpha=0.015
+batch_size=50
+debug=0
