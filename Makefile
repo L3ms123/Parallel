@@ -7,7 +7,7 @@ LIBS    = -lm
 CONFIG       = configuration/configfile.txt
 CONFIG_SHORT = configuration/config_short.txt
 
-.PHONY: all seq gprof prof-gprof perf prof-perf short clean
+.PHONY: all seq omp gprof prof-gprof perf prof-perf short clean
 
 all: seq
 
@@ -15,6 +15,11 @@ all: seq
 seq: exec
 exec: $(SRC)
 	$(CC) -Ofast -g $(SRC) -o exec $(LIBS)
+
+# OpenMP binary (section 3). Threads: OMP_NUM_THREADS=N ./exec_omp
+omp: exec_omp
+exec_omp: $(SRC)
+	$(CC) -Ofast -g -fopenmp $(SRC) -o exec_omp $(LIBS)
 
 # gprof binary (function % for section 2.3)
 gprof: exec_gprof
@@ -39,4 +44,4 @@ short: exec
 	./exec $(CONFIG_SHORT)
 
 clean:
-	rm -f exec exec_gprof *.o gmon.out perf.data gprof_report.txt perf_report.txt
+	rm -f exec exec_omp exec_gprof *.o gmon.out perf.data gprof_report.txt perf_report.txt
