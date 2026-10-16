@@ -1,0 +1,52 @@
+#!/bin/bash -l
+#SBATCH --job-name=nn-evidence
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=12
+#SBATCH --exclusive
+#SBATCH --time=00:30:00
+#SBATCH --output=evidence-%j.out
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR"
+module load gcc/13.2.1
+measured_commit=bf05ee22a2336ca2f16a8e0bdfe998d2cf21cf5d
+support="$PWD/validation_support"
+result="$PWD/evidence-results/${SLURM_JOB_PARTITION}-${SLURM_JOB_ID}"
+mkdir -p "$result/source"
+git archive "$measured_commit" | tar -x -C "$result/source"
+cd "$result/source"
+export OMP_DYNAMIC=FALSE OMP_PROC_BIND=TRUE OMP_PLACES=cores
+{
+ hostname
+ lscpu
+ gcc --version
+ printf 'Measured commit: %s\n' "$measured_commit"
+ env | sort | sed -n '/^OMP_/p; /^SLURM_CPUS/p; /^SLURM_JOB/p'
+ taskset -pc $$ || true
+} > "$result/provenance.txt"
+cp configuration/configfile.txt "$result/configfile.txt"
+find "$support/original_source" -type f -print0 | sort -z | xargs -0 sha256sum > "$result/original-sha256.txt"
+modules=(main.c common/common.c configuration/config.c layer/layer.c randomizer/randomizer.c initialize/initialize.c training/training.c)
+original_modules=()
+for source in "${modules[@]}"; do original_modules+=("$support/original_source/$source"); done
+gcc -Ofast -g "${original_modules[@]}" -o "$result/exec_original" -lm
+gcc -Ofast -g "${modules[@]}" -o "$result/exec_rewritten" -lm
+gcc -Ofast -g -fopenmp "${modules[@]}" -o "$result/exec_omp" -lm
+for repeat in 1 2 3; do
+ "$result/exec_original" configuration/configfile.txt > "$result/original-${repeat}.txt" 2>&1
+ "$result/exec_rewritten" configuration/configfile.txt > "$result/rewritten-${repeat}.txt" 2>&1
+ for threads in 1 2 4 6 8 12; do
+  OMP_NUM_THREADS="$threads" "$result/exec_omp" configuration/configfile.txt > "$result/omp-${threads}-${repeat}.txt" 2>&1
+ done
+done
+# Separate profiling build: never use its time for speedup.
+gcc -O2 -pg -g "${modules[@]}" -o "$result/exec_gprof" -lm
+"$result/exec_gprof" configuration/config_short.txt > "$result/profile-run.txt" 2>&1
+if command -v gprof >/dev/null 2>&1; then
+ gprof "$result/exec_gprof" gmon.out > "$result/gprof_report.txt"
+ cp gmon.out "$result/gmon.out"
+else
+ printf 'gprof unavailable; gmon.out retained in source directory.\n' > "$result/profile-status.txt"
+fi
+grep -H -E 'Total encerts|Goodbye' "$result"/original-*.txt "$result"/rewritten-*.txt "$result"/omp-*.txt
+printf 'FINISHED: %s\n' "$result"
