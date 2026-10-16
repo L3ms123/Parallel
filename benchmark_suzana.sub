@@ -1,0 +1,41 @@
+#!/bin/bash -l
+#SBATCH --job-name=nn-benchmark
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=12
+#SBATCH --exclusive
+#SBATCH --time=00:30:00
+#SBATCH --output=benchmark-%j.out
+
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR"
+module load gcc/13.2.1
+
+export OMP_DYNAMIC=FALSE
+export OMP_PROC_BIND=TRUE
+export OMP_PLACES=cores
+
+RESULT_DIR="results/${SLURM_JOB_PARTITION}-${SLURM_JOB_ID}"
+mkdir -p "$RESULT_DIR"
+
+hostname > "$RESULT_DIR/hardware.txt"
+lscpu >> "$RESULT_DIR/hardware.txt"
+gcc --version > "$RESULT_DIR/compiler.txt"
+git rev-parse HEAD > "$RESULT_DIR/commit.txt"
+cp configuration/configfile.txt "$RESULT_DIR/configfile.txt"
+
+for repeat in 1 2 3; do
+    echo "Sequential: repetition $repeat"
+    ./exec configuration/configfile.txt \
+        > "$RESULT_DIR/seq-${repeat}.txt" 2>&1
+
+    for threads in 1 2 4 6 8 12; do
+        echo "OpenMP: $threads threads, repetition $repeat"
+        OMP_NUM_THREADS="$threads" \
+            ./exec_omp configuration/configfile.txt \
+            > "$RESULT_DIR/omp-${threads}-${repeat}.txt" 2>&1
+    done
+done
+
+echo "FINISHED: $RESULT_DIR"
+grep -H -E 'Total encerts|Goodbye' "$RESULT_DIR"/*.txt

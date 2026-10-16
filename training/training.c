@@ -67,21 +67,28 @@ void init_deltas() {
  *
  */
 void forward_prop() {
-    for (int i = 1; i < num_layers; i++) {
-        if (debug == 1) printf("Valors activació capa %d \n", i);
-        for (int j = 0; j < num_neurons[i]; j++) {
-            lay[i].z[j] = lay[i].bias[j];
-            for (int k = 0; k < num_neurons[i - 1]; k++)
-                lay[i].z[j] +=
-                    ((lay[i - 1].out_weights[j * num_neurons[i - 1] + k]) *
-                     (lay[i - 1].actv[k]));
-            if (i < num_layers - 1)  // Relu Activation Function for Hidden Layers
-                lay[i].actv[j] = ((lay[i].z[j]) < 0) ? 0 : lay[i].z[j];
-            else  // Sigmoid Activation Function for Output Layer
-                lay[i].actv[j] = 1 / (1 + exp(-lay[i].z[j]));
-            if (debug == 1) printf("%f %f ", lay[i].actv[j], lay[i].z[j]);
+    /* One parallel region for the whole forward pass (12/04/2026).
+     * Layers stay sequential; threads work-share neurons of each layer. */
+    #pragma omp parallel
+    {
+        for (int i = 1; i < num_layers; i++) {
+            const int n = num_neurons[i];
+            const int nprev = num_neurons[i - 1];
+            const int hidden = (i < num_layers - 1);
+
+            #pragma omp for schedule(static)
+            for (int j = 0; j < n; j++) {
+                float z = lay[i].bias[j];
+                for (int k = 0; k < nprev; k++)
+                    z += lay[i - 1].out_weights[j * nprev + k] * lay[i - 1].actv[k];
+                lay[i].z[j] = z;
+                if (hidden)
+                    lay[i].actv[j] = (z < 0) ? 0 : z;
+                else
+                    lay[i].actv[j] = 1.0f / (1.0f + expf(-z));
+            }
+            /* Implicit barrier: layer i must finish before layer i+1 reads actv. */
         }
-        if (debug == 1) printf("\n\n");
     }
 }
 
@@ -131,46 +138,71 @@ float compute_loss(int i) {
  *
  */
 void back_prop(int p) {
-    // Output Layer
-    for (int k = 0; k < num_neurons[num_layers - 2]; k++) 
-        lay[num_layers - 2].dactv[k] = 0;
+    /* Loop-level OpenMP. dactv[k] is accumulated over k (not j) to avoid races
+     * (12/04/2026). */
+    const int last = num_layers - 1;
+    const int prev_out = num_layers - 2;
 
-    for (int j = 0; j < num_neurons[num_layers - 1]; j++) {
-        lay[num_layers - 1].dz[j] =
-            (lay[num_layers - 1].actv[j] - desired_outputs[p][j]) *
-            (lay[num_layers - 1].actv[j]) * (1 - lay[num_layers - 1].actv[j]);
-        lay[num_layers - 1].dbias[j] += lay[num_layers - 1].dz[j];
-    }
+    #pragma omp parallel
+    {
+        #pragma omp for schedule(static)
+        for (int k = 0; k < num_neurons[prev_out]; k++)
+            lay[prev_out].dactv[k] = 0.0f;
 
-    for (int j = 0; j < num_neurons[num_layers - 1]; j++) {
-        for (int k = 0; k < num_neurons[num_layers - 2]; k++) {
-            lay[num_layers - 2].dw[j * num_neurons[num_layers - 2] + k] +=
-                (lay[num_layers - 1].dz[j] * lay[num_layers - 2].actv[k]);
-            lay[num_layers - 2].dactv[k] +=          
-                lay[num_layers - 2].out_weights[j * num_neurons[num_layers - 2] + k] *
-                lay[num_layers - 1].dz[j];
+        #pragma omp for schedule(static)
+        for (int j = 0; j < num_neurons[last]; j++) {
+            float a = lay[last].actv[j];
+            float dz = (a - desired_outputs[p][j]) * a * (1.0f - a);
+            lay[last].dz[j] = dz;
+            lay[last].dbias[j] += dz;
         }
-    }
 
-    // Hidden Layers
-    for (int i = num_layers - 2; i > 0; i--) {
-        if ( i > 1 )
-            for (int k = 0; k < num_neurons[i - 1]; k++)
-                lay[i - 1].dactv[k] = 0;
+        /* dw[j,k] is unique per j; independent of the dactv reduction below. */
+        #pragma omp for schedule(static) nowait
+        for (int j = 0; j < num_neurons[last]; j++) {
+            float dz = lay[last].dz[j];
+            const int nprev = num_neurons[prev_out];
+            for (int k = 0; k < nprev; k++)
+                lay[prev_out].dw[j * nprev + k] += dz * lay[prev_out].actv[k];
+        }
 
-        for (int j = 0; j < num_neurons[i]; j++) {
-            lay[i].dz[j] = (lay[i].z[j] >= 0) ? lay[i].dactv[j] : 0;
+        #pragma omp for schedule(static)
+        for (int k = 0; k < num_neurons[prev_out]; k++) {
+            float acc = 0.0f;
+            const int nprev = num_neurons[prev_out];
+            for (int j = 0; j < num_neurons[last]; j++)
+                acc += lay[prev_out].out_weights[j * nprev + k] * lay[last].dz[j];
+            lay[prev_out].dactv[k] += acc;
+        }
 
-            for (int k = 0; k < num_neurons[i - 1]; k++) {
-                lay[i - 1].dw[j * num_neurons[i - 1] + k] +=
-                    lay[i].dz[j] * lay[i - 1].actv[k];
+        for (int i = prev_out; i > 0; i--) {
+            const int n = num_neurons[i];
+            const int nprev = num_neurons[i - 1];
 
-                if (i > 1)
-                    lay[i - 1].dactv[k] +=
-                        lay[i - 1].out_weights[j * num_neurons[i - 1] + k] *
-                        lay[i].dz[j];
+            if (i > 1) {
+                #pragma omp for schedule(static)
+                for (int k = 0; k < nprev; k++)
+                    lay[i - 1].dactv[k] = 0.0f;
             }
-            lay[i].dbias[j] += lay[i].dz[j];
+
+            #pragma omp for schedule(static)
+            for (int j = 0; j < n; j++) {
+                float dz = (lay[i].z[j] >= 0) ? lay[i].dactv[j] : 0.0f;
+                lay[i].dz[j] = dz;
+                for (int k = 0; k < nprev; k++)
+                    lay[i - 1].dw[j * nprev + k] += dz * lay[i - 1].actv[k];
+                lay[i].dbias[j] += dz;
+            }
+
+            if (i > 1) {
+                #pragma omp for schedule(static)
+                for (int k = 0; k < nprev; k++) {
+                    float acc = 0.0f;
+                    for (int j = 0; j < n; j++)
+                        acc += lay[i - 1].out_weights[j * nprev + k] * lay[i].dz[j];
+                    lay[i - 1].dactv[k] += acc;
+                }
+            }
         }
     }
 }

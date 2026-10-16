@@ -177,3 +177,46 @@ També permet desactivar-los en qualsevol moment canviant el valor de debug!!!
 
 ---------------------------------------------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------------------------------------
+MAKEFILE:
+
+Cal gcc (al cluster: module add gcc/13.2.1). Per perfilar, gprof i/o perf.
+
+Configs:
+  configuration/configfile.txt       -> 10 epochs (temps, accuracy, speedup)
+  configuration/config_short.txt     -> 2 epochs, mateixa xarxa i datasets (apartat 2.3)
+
+Targets:
+  make / make seq     -> exec        sequential baseline (-Ofast -g, sense -fopenmp)
+  make omp            -> exec_omp    OpenMP (-Ofast -g -fopenmp)
+  make gprof          -> exec_gprof  sequential amb -O2 -pg -g
+  make prof-gprof     -> gprof_report.txt   executa exec_gprof amb config_short + gprof
+  make prof-perf      -> perf.data, perf_report.txt   perf record -g sobre exec + config_short
+  make short          -> executa exec amb config_short.txt
+  make clean          -> esborra binaris, gmon.out, perf.data i reports
+
+Perfil seqüencial (apartat 2.3):
+  make prof-gprof
+  make prof-perf
+
+OpenMP vs seqüencial (10 epochs):
+  make seq
+  ./exec configuration/configfile.txt
+
+  make omp
+  OMP_NUM_THREADS=1 ./exec_omp configuration/configfile.txt
+  OMP_NUM_THREADS=2 ./exec_omp configuration/configfile.txt
+  OMP_NUM_THREADS=4 ./exec_omp configuration/configfile.txt
+  OMP_NUM_THREADS=8 ./exec_omp configuration/configfile.txt
+
+OMP_NUM_THREADS=1 ha de donar el mateix resultat que exec (seed=50).
+exec es el baseline seqüencial; exec_omp es la versió paral·lela. No barrejar-los en les mesures.
+
+Flags:
+  -Ofast      timing / seq, omp, perf
+  -O2 -pg     nomes gprof (no usar per speedup)
+  -g          simbols per perf / debug
+  -fopenmp    nomes exec_omp
+  -lm         llibreria matematica
+
+---------------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------------------------------------
